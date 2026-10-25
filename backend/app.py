@@ -61,41 +61,63 @@ def predict_sales():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# Define an endpoint to predict sales for a batch of products with full preprocessing
+# Define an endpoint to predict sales for a batch of products with robust preprocessing
 @superkart_api.post('/v1/predictbatch')
 def predict_sales_batch():
     try:
         # Get the uploaded CSV file from the request
         if 'file' not in request.files:
             raise ValueError("No file field found in the request.")
-            
+
         file = request.files['file']
 
         # Read the file into a DataFrame
         raw_data = pd.read_csv(file)
-
-        # 1. Apply exact same preprocessing steps as used during training
         processed_data = raw_data.copy()
-        processed_data["Product_Sugar_Content"] = processed_data["Product_Sugar_Content"].replace("reg", "Regular")
-        processed_data["Product_Id_char"] = processed_data["Product_Id"].str[:2]
-        processed_data["Store_Age_Years"] = 2025 - processed_data["Store_Establishment_Year"]
-        processed_data["Product_Type_Category"] = processed_data["Product_Type"].apply(categorize_product)
 
-        # 2. Select only the expected feature columns
+        # Robust Preprocessing: Only run feature engineering steps if the engineered columns are missing
+        if "Product_Sugar_Content" in processed_data.columns:
+            processed_data["Product_Sugar_Content"] = processed_data["Product_Sugar_Content"].replace("reg", "Regular")
+
+        if "Product_Id_char" not in processed_data.columns:
+            if "Product_Id" in processed_data.columns:
+                processed_data["Product_Id_char"] = processed_data["Product_Id"].str[:2]
+            else:
+                raise ValueError("Either 'Product_Id_char' or raw 'Product_Id' must be present in the CSV.")
+
+        if "Store_Age_Years" not in processed_data.columns:
+            if "Store_Establishment_Year" in processed_data.columns:
+                processed_data["Store_Age_Years"] = 2025 - processed_data["Store_Establishment_Year"]
+            else:
+                raise ValueError("Either 'Store_Age_Years' or raw 'Store_Establishment_Year' must be present in the CSV.")
+
+        if "Product_Type_Category" not in processed_data.columns:
+            if "Product_Type" in processed_data.columns:
+                processed_data["Product_Type_Category"] = processed_data["Product_Type"].apply(categorize_product)
+            else:
+                raise ValueError("Either 'Product_Type_Category' or raw 'Product_Type' must be present in the CSV.")
+
+        # Select only the expected feature columns
         features_to_keep = [
             "Product_Weight", "Product_Sugar_Content", "Product_Allocated_Area", "Product_MRP",
             "Store_Size", "Store_Location_City_Type", "Store_Type", "Product_Id_char",
             "Store_Age_Years", "Product_Type_Category", "Product_Type", "Store_Id"
         ]
+
+        # Ensure all model target features are present
+        missing_features = [col for col in features_to_keep if col not in processed_data.columns]
+        if missing_features:
+            raise ValueError(f"Missing required features for model prediction: {missing_features}")
+
         model_inputs = processed_data[features_to_keep]
 
         if model is None:
             raise ValueError("Machine learning model is not loaded properly.")
 
-        # 3. Make predictions for the batch data
+        # Make predictions for the batch data
         predictions = model.predict(model_inputs).tolist()
 
-        # 4. Create an output dictionary mapping row index to predicted sales
+        # Create an output dictionary mapping row index to predicted sales
         output_dict = {str(i): round(pred, 2) for i, pred in enumerate(predictions)}
 
         return jsonify(output_dict)
